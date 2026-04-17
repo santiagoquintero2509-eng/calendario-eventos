@@ -2,7 +2,7 @@ name: Actualizar calendario
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/5 * * * *'  # cada 5 minutos
   workflow_dispatch:
 
 jobs:
@@ -33,6 +33,10 @@ jobs:
         run: |
           git config --global user.name "bot-calendario"
           git config --global user.email "bot@github.com"
+
+          # 🔥 FORZAR CAMBIO SIEMPRE
+          echo "# actualizado $(date)" >> eventos.ics
+
           git add eventos.ics
-          git commit -m "🔄 Actualización automática" || echo "Sin cambios"
+          git commit -m "Actualización automática calendario"
           git push
