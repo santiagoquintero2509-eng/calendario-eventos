@@ -1,0 +1,38 @@
+name: Actualizar calendario
+
+on:
+  schedule:
+    - cron: '0 12 * * *'  # todos los días (12:00 UTC)
+  workflow_dispatch:
+
+jobs:
+  actualizar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clonar repositorio
+        uses: actions/checkout@v3
+
+      - name: Configurar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install dropbox python-dotenv PyGithub
+
+      - name: Ejecutar script
+        env:
+          DROPBOX_TOKEN: ${{ secrets.DROPBOX_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: calendario-eventos
+        run: python main.py
+
+      - name: Subir cambios
+        run: |
+          git config --global user.name "bot-calendario"
+          git config --global user.email "bot@github.com"
+          git add eventos.ics
+          git commit -m "🔄 Actualización automática" || echo "Sin cambios"
+          git push
