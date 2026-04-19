@@ -1,15 +1,21 @@
-from dotenv import load_dotenv
 import os
-import dropbox
 import re
-from github import Github
+from datetime import datetime, UTC
 
-# 🔹 Cargar variables
+from dotenv import load_dotenv
+import dropbox
+
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+
+# ---------------- CONFIG ----------------
+SCOPES = ['https://www.googleapis.com/auth/calendar']
+CALENDAR_ID = 'primary'
+
 load_dotenv()
 
 DROPBOX_TOKEN = os.getenv("DROPBOX_TOKEN")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_REPO = os.getenv("GITHUB_REPO")
 
 if not DROPBOX_TOKEN:
     print("❌ Falta DROPBOX_TOKEN")
@@ -17,8 +23,27 @@ if not DROPBOX_TOKEN:
 
 dbx = dropbox.Dropbox(DROPBOX_TOKEN)
 
+# ---------------- AUTH GOOGLE ----------------
+def get_calendar_service():
+    creds = None
 
-# 🧠 PARSER
+    if os.path.exists("token.json"):
+        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+
+    if not creds or not creds.valid:
+        flow = InstalledAppFlow.from_client_secrets_file(
+            "client_secret.json", SCOPES
+        )
+        creds = flow.run_local_server(port=0)
+
+        with open("token.json", "w") as token:
+            token.write(creds.to_json())
+
+    service = build("calendar", "v3", credentials=creds)
+    return service
+
+
+# ---------------- PARSER ----------------
 def interpretar_nombre(nombre):
     try:
         year = re.search(r"\d{4}", nombre).group()
@@ -31,153 +56,150 @@ def interpretar_nombre(nombre):
         m_inicio = montaje.group(1)
         m_fin = montaje.group(2) if montaje.group(2) else m_inicio
 
-        despues = nombre.split(")")[-1].strip()
+        partes = nombre.split(" - ")
 
-        rango = re.match(r"(\d{1,2})\s*-\s*(\d{1,2})", despues)
-        simple = re.match(r"(\d{1,2})", despues)
-
-        if rango:
-            e_inicio = rango.group(1)
-            e_fin = rango.group(2)
-            texto = despues.replace(f"{e_inicio} - {e_fin}", "")
-        elif simple:
-            e_inicio = simple.group(1)
-            e_fin = e_inicio
-            texto = despues.replace(f"{e_inicio}", "")
-        else:
-            return None
-
-        texto = texto.strip(" -")
-        partes = texto.split(" - ")
-
-        if len(partes) >= 2:
-            cliente = partes[0]
-            evento = partes[1]
-        else:
-            cliente = "Cliente"
-            evento = "Evento"
-
+        evento = partes[-2]
         lugar = partes[-1]
+        cliente = partes[-3] if len(partes) >= 3 else "Sin cliente"
 
         return {
-            "evento": evento,
-            "cliente": cliente,
-            "lugar": lugar,
-            "montaje_inicio": f"{year}-{month}-{m_inicio.zfill(2)}",
-            "montaje_fin": f"{year}-{month}-{m_fin.zfill(2)}",
-            "desmontaje": f"{year}-{month}-{e_fin.zfill(2)}"
+            "evento": evento.strip(),
+            "cliente": cliente.strip(),
+            "lugar": lugar.strip(),
+            "montaje_inicio": f"{year}-{month}-{int(m_inicio):02d}",
+            "montaje_fin": f"{year}-{month}-{int(m_fin):02d}",
+            "desmontaje": f"{year}-{month}-{int(m_fin)+1:02d}"
         }
 
-    except Exception as e:
-        print("❌ Error interpretando:", nombre)
-        print(e)
+    except:
         return None
 
 
-# 📅 CREAR ICS
-def crear_ics(eventos):
-    contenido = "BEGIN:VCALENDAR\nVERSION:2.0\n"
+# ---------------- GOOGLE UTILS ----------------
+def buscar_evento_existente(service, summary, start_date):
+    eventos = service.events().list(
+        calendarId=CALENDAR_ID,
+        timeMin=f"{start_date}T00:00:00Z",
+        timeMax=f"{start_date}T23:59:59Z",
+        q=summary
+    ).execute()
 
-    for e in eventos:
-        contenido += f"""BEGIN:VEVENT
-SUMMARY:{e['titulo']}
-DTSTART:{e['inicio']}
-DTEND:{e['fin']}
-LOCATION:{e['lugar']}
-END:VEVENT
-"""
-
-    contenido += "END:VCALENDAR"
-
-    with open("eventos.ics", "w", encoding="utf-8") as f:
-        f.write(contenido)
-
-    print("📅 Archivo eventos.ics creado")
+    items = eventos.get("items", [])
+    return items[0] if items else None
 
 
-# ☁️ SUBIR A GITHUB
-def subir_a_github():
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        print("❌ Falta configuración de GitHub")
-        return
+def crear_o_actualizar_evento(service, summary, start, end, location):
+    existente = buscar_evento_existente(service, summary, start[:10])
 
-    try:
-        g = Github(GITHUB_TOKEN)
-        repo = g.get_user().get_repo(GITHUB_REPO)
+    evento_body = {
+        "summary": summary,
+        "location": location,
+        "start": {"dateTime": start, "timeZone": "America/Bogota"},
+        "end": {"dateTime": end, "timeZone": "America/Bogota"},
+    }
 
-        with open("eventos.ics", "r", encoding="utf-8") as f:
-            contenido = f.read()
-
-        try:
-            archivo = repo.get_contents("eventos.ics")
-
-            repo.update_file(
-                path="eventos.ics",
-                message="🔄 Actualización automática calendario",
-                content=contenido,
-                sha=archivo.sha
-            )
-
-            print("☁️ Archivo actualizado en GitHub")
-
-        except:
-            repo.create_file(
-                path="eventos.ics",
-                message="📅 Creación inicial calendario",
-                content=contenido
-            )
-
-            print("☁️ Archivo subido a GitHub")
-
-    except Exception as e:
-        print("❌ Error GitHub:", e)
+    if existente:
+        print(f"🔄 Actualizando: {summary}")
+        service.events().update(
+            calendarId=CALENDAR_ID,
+            eventId=existente["id"],
+            body=evento_body
+        ).execute()
+    else:
+        print(f"🆕 Creando: {summary}")
+        service.events().insert(
+            calendarId=CALENDAR_ID,
+            body=evento_body
+        ).execute()
 
 
-# 📂 PROCESO PRINCIPAL
-def procesar():
-    eventos_lista = []
+def limpiar_eventos_viejos(service):
+    hoy = datetime.now(UTC).isoformat()
 
-    try:
-        result = dbx.files_list_folder("")
-        print("\n📂 Procesando carpetas:\n")
+    eventos = service.events().list(
+        calendarId=CALENDAR_ID,
+        timeMax=hoy
+    ).execute()
 
-        for entry in result.entries:
-            if isinstance(entry, dropbox.files.FolderMetadata):
-                nombre = entry.name
-                print("📁", nombre)
-
-                data = interpretar_nombre(nombre)
-
-                if data:
-                    print("✅ OK:", data)
-
-                    eventos_lista.append({
-                        "titulo": f"MONTAJE - {data['evento']}",
-                        "inicio": data["montaje_inicio"].replace("-", "") + "T080000",
-                        "fin": data["montaje_fin"].replace("-", "") + "T200000",
-                        "lugar": data["lugar"]
-                    })
-
-                    eventos_lista.append({
-                        "titulo": f"DESMONTAJE - {data['evento']}",
-                        "inicio": data["desmontaje"].replace("-", "") + "T080000",
-                        "fin": data["desmontaje"].replace("-", "") + "T200000",
-                        "lugar": data["lugar"]
-                    })
-
-                else:
-                    print("⚠️ No se pudo interpretar")
-
-                print("-" * 50)
-
-        print(f"\n🔢 Total eventos: {len(eventos_lista)}")
-
-        crear_ics(eventos_lista)
-        subir_a_github()
-
-    except Exception as e:
-        print("❌ Error Dropbox:", e)
+    for evento in eventos.get("items", []):
+        summary = evento.get("summary", "")
+        if "MONTAJE" in summary or "DESMONTAJE" in summary:
+            print(f"🗑 Eliminando viejo: {summary}")
+            service.events().delete(
+                calendarId=CALENDAR_ID,
+                eventId=evento["id"]
+            ).execute()
 
 
-# 🚀 EJECUTAR
-procesar()
+def limpiar_eventos_huerfanos(service, eventos_validos):
+    print("\n🔍 Verificando eventos huérfanos...")
+
+    eventos_google = service.events().list(
+        calendarId=CALENDAR_ID
+    ).execute().get("items", [])
+
+    for evento in eventos_google:
+        summary = evento.get("summary", "")
+
+        if "MONTAJE" in summary or "DESMONTAJE" in summary:
+            if summary not in eventos_validos:
+                print(f"🗑 Eliminando huérfano: {summary}")
+                service.events().delete(
+                    calendarId=CALENDAR_ID,
+                    eventId=evento["id"]
+                ).execute()
+
+
+# ---------------- MAIN ----------------
+def main():
+    service = get_calendar_service()
+
+    print("📁 Procesando carpetas...\n")
+
+    resultados = []
+    eventos_validos = []
+
+    for entry in dbx.files_list_folder("").entries:
+        if isinstance(entry, dropbox.files.FolderMetadata):
+            data = interpretar_nombre(entry.name)
+            if data:
+                resultados.append(data)
+                print("✔ OK:", data)
+
+    print(f"\n📊 Total eventos: {len(resultados)}\n")
+
+    # 🧹 limpiar eventos viejos
+    limpiar_eventos_viejos(service)
+
+    for evento in resultados:
+
+        nombre_montaje = f"MONTAJE - {evento['evento']} - {evento['lugar']}"
+        nombre_desmontaje = f"DESMONTAJE - {evento['evento']} - {evento['lugar']}"
+
+        eventos_validos.append(nombre_montaje)
+        eventos_validos.append(nombre_desmontaje)
+
+        crear_o_actualizar_evento(
+            service,
+            nombre_montaje,
+            evento['montaje_inicio'] + "T08:00:00",
+            evento['montaje_fin'] + "T20:00:00",
+            evento['lugar']
+        )
+
+        crear_o_actualizar_evento(
+            service,
+            nombre_desmontaje,
+            evento['desmontaje'] + "T08:00:00",
+            evento['desmontaje'] + "T20:00:00",
+            evento['lugar']
+        )
+
+    # 🧠 eliminar eventos que ya no existen en Dropbox
+    limpiar_eventos_huerfanos(service, eventos_validos)
+
+    print("\n🚀 Calendario sincronizado perfectamente")
+
+
+if __name__ == "__main__":
+    main()
