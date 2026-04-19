@@ -2,7 +2,11 @@ name: Sync Calendar
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: "*/5 * * * *"
+    - cron: "2-59/5 * * * *"
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -10,18 +14,23 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: 📥 Clonar repositorio
+        uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: 🐍 Configurar Python
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: 📦 Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Run script
+      - name: 🔐 Crear credenciales Google
+        run: echo '${{ secrets.GOOGLE_CREDENTIALS }}' > client_secret.json
+
+      - name: 🚀 Ejecutar script
         env:
           DROPBOX_TOKEN: ${{ secrets.DROPBOX_TOKEN }}
-          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
         run: python main.py
