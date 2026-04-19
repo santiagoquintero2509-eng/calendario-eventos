@@ -28,10 +28,12 @@ jobs:
           pip install -r requirements.txt
 
       - name: 🔐 Crear credenciales Google (client_secret.json)
-        run: echo '${{ secrets.GOOGLE_CREDENTIALS }}' > client_secret.json
+        run: |
+          printf "%s" '${{ secrets.GOOGLE_CREDENTIALS }}' > client_secret.json
 
       - name: 🔐 Crear token Google (token.json)
-        run: echo '${{ secrets.GOOGLE_TOKEN }}' > token.json
+        run: |
+          printf "%s" '${{ secrets.GOOGLE_TOKEN }}' > token.json
 
       - name: 🚀 Ejecutar script
         env:
