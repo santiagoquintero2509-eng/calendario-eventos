@@ -1,199 +1,144 @@
+from dotenv import load_dotenv
 import os
 import re
-import json
-from datetime import datetime, UTC
-
-from dotenv import load_dotenv
 import dropbox
+from datetime import datetime, timezone
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-# ---------------- CONFIG ----------------
-SCOPES = ['https://www.googleapis.com/auth/calendar']
-CALENDAR_ID = 'primary'
-
+# 🔐 CONFIG
 load_dotenv()
-
 DROPBOX_TOKEN = os.getenv("DROPBOX_TOKEN")
 
-if not DROPBOX_TOKEN:
-    print("❌ Falta DROPBOX_TOKEN")
-    exit()
+# 🔗 GOOGLE AUTH
+creds = Credentials.from_authorized_user_file("token.json")
+service = build('calendar', 'v3', credentials=creds)
 
+# 📦 DROPBOX
 dbx = dropbox.Dropbox(DROPBOX_TOKEN)
 
-# ---------------- GOOGLE AUTH (GITHUB READY) ----------------
-def get_calendar_service():
-    if "GOOGLE_TOKEN_JSON" not in os.environ:
-        print("❌ Falta GOOGLE_TOKEN_JSON")
-        exit()
-
-    token_data = json.loads(os.environ["GOOGLE_TOKEN_JSON"])
-    creds = Credentials.from_authorized_user_info(token_data, SCOPES)
-
-    service = build("calendar", "v3", credentials=creds)
-    return service
-
-
-# ---------------- PARSER ----------------
+# 🧠 PARSER
 def interpretar_nombre(nombre):
     try:
         year = re.search(r"\d{4}", nombre).group()
-        month = re.search(r"- (\d{2})", nombre).group(1)
+        dias = re.search(r"\((.*?)\)", nombre).group(1)
 
-        montaje = re.search(r"\((\d{1,2})(?:-(\d{1,2}))?\)", nombre)
-        if not montaje:
-            return None
+        partes = nombre.split("-")
+        evento = partes[-3].strip()
+        cliente = partes[-4].strip()
+        lugar = partes[-1].strip()
 
-        m_inicio = montaje.group(1)
-        m_fin = montaje.group(2) if montaje.group(2) else m_inicio
+        numeros = re.findall(r"\d{1,2}", dias)
 
-        partes = nombre.split(" - ")
-
-        evento = partes[-2]
-        lugar = partes[-1]
-        cliente = partes[-3] if len(partes) >= 3 else "Sin cliente"
+        inicio = f"{year}-04-{numeros[0].zfill(2)}"
+        fin = f"{year}-04-{numeros[-1].zfill(2)}"
 
         return {
-            "evento": evento.strip(),
-            "cliente": cliente.strip(),
-            "lugar": lugar.strip(),
-            "montaje_inicio": f"{year}-{month}-{int(m_inicio):02d}",
-            "montaje_fin": f"{year}-{month}-{int(m_fin):02d}",
-            "desmontaje": f"{year}-{month}-{int(m_fin)+1:02d}"
+            "evento": evento,
+            "cliente": cliente,
+            "lugar": lugar,
+            "montaje_inicio": inicio,
+            "montaje_fin": inicio,
+            "desmontaje": fin
         }
-
-    except Exception as e:
-        print(f"❌ Error interpretando: {nombre}")
+    except:
         return None
 
-
-# ---------------- GOOGLE UTILS ----------------
-def buscar_evento_existente(service, summary, start_date):
+# 🔍 BUSCAR EVENTO
+def buscar_evento(service, summary, start):
     eventos = service.events().list(
-        calendarId=CALENDAR_ID,
-        timeMin=f"{start_date}T00:00:00Z",
-        timeMax=f"{start_date}T23:59:59Z",
-        q=summary
+        calendarId='primary',
+        timeMin=start + "T00:00:00Z",
+        maxResults=50,
+        singleEvents=True
     ).execute()
 
-    items = eventos.get("items", [])
-    return items[0] if items else None
+    for e in eventos.get('items', []):
+        if e['summary'] == summary:
+            return e
+    return None
 
-
+# ➕ / 🔄 CREAR O ACTUALIZAR
 def crear_o_actualizar_evento(service, summary, start, end, location):
-    existente = buscar_evento_existente(service, summary, start[:10])
+    existente = buscar_evento(service, summary, start)
 
-    evento_body = {
-        "summary": summary,
-        "location": location,
-        "start": {"dateTime": start, "timeZone": "America/Bogota"},
-        "end": {"dateTime": end, "timeZone": "America/Bogota"},
+    evento = {
+        'summary': summary,
+        'location': location,
+        'start': {'dateTime': start + "T08:00:00", 'timeZone': 'America/Bogota'},
+        'end': {'dateTime': end + "T20:00:00", 'timeZone': 'America/Bogota'},
     }
 
     if existente:
-        print(f"🔄 Actualizando: {summary}")
         service.events().update(
-            calendarId=CALENDAR_ID,
-            eventId=existente["id"],
-            body=evento_body
+            calendarId='primary',
+            eventId=existente['id'],
+            body=evento
         ).execute()
+        print(f"🔄 Actualizado: {summary}")
     else:
-        print(f"🆕 Creando: {summary}")
         service.events().insert(
-            calendarId=CALENDAR_ID,
-            body=evento_body
+            calendarId='primary',
+            body=evento
         ).execute()
+        print(f"🆕 Creado: {summary}")
 
-
-def limpiar_eventos_viejos(service):
-    hoy = datetime.now(UTC).isoformat()
+# 🗑 ELIMINAR EVENTOS VIEJOS
+def limpiar_eventos(service, eventos_actuales):
+    now = datetime.now(timezone.utc).isoformat()
 
     eventos = service.events().list(
-        calendarId=CALENDAR_ID,
-        timeMax=hoy
+        calendarId='primary',
+        timeMin="2020-01-01T00:00:00Z",
+        maxResults=250,
+        singleEvents=True
     ).execute()
 
-    for evento in eventos.get("items", []):
-        summary = evento.get("summary", "")
-        if "MONTAJE" in summary or "DESMONTAJE" in summary:
-            print(f"🗑 Eliminando viejo: {summary}")
-            service.events().delete(
-                calendarId=CALENDAR_ID,
-                eventId=evento["id"]
-            ).execute()
-
-
-def limpiar_eventos_huerfanos(service, eventos_validos):
-    print("\n🔍 Verificando eventos huérfanos...")
-
-    eventos_google = service.events().list(
-        calendarId=CALENDAR_ID
-    ).execute().get("items", [])
-
-    for evento in eventos_google:
-        summary = evento.get("summary", "")
-
-        if "MONTAJE" in summary or "DESMONTAJE" in summary:
-            if summary not in eventos_validos:
-                print(f"🗑 Eliminando huérfano: {summary}")
+    for e in eventos.get('items', []):
+        if "MONTAJE" in e['summary'] or "DESMONTAJE" in e['summary']:
+            if e['summary'] not in eventos_actuales:
                 service.events().delete(
-                    calendarId=CALENDAR_ID,
-                    eventId=evento["id"]
+                    calendarId='primary',
+                    eventId=e['id']
                 ).execute()
+                print(f"🗑 Eliminado: {e['summary']}")
 
-
-# ---------------- MAIN ----------------
+# 🚀 MAIN
 def main():
-    service = get_calendar_service()
-
-    print("📁 Procesando carpetas...\n")
-
-    resultados = []
-    eventos_validos = []
+    print("📁 Procesando carpetas...")
+    eventos_actuales = []
 
     for entry in dbx.files_list_folder("").entries:
-        if isinstance(entry, dropbox.files.FolderMetadata):
-            data = interpretar_nombre(entry.name)
-            if data:
-                resultados.append(data)
-                print("✔ OK:", data)
+        data = interpretar_nombre(entry.name)
+        if not data:
+            continue
 
-    print(f"\n📊 Total eventos: {len(resultados)}\n")
-
-    # 🧹 limpiar eventos viejos
-    limpiar_eventos_viejos(service)
-
-    for evento in resultados:
-
-        nombre_montaje = f"MONTAJE - {evento['evento']} - {evento['lugar']}"
-        nombre_desmontaje = f"DESMONTAJE - {evento['evento']} - {evento['lugar']}"
-
-        eventos_validos.append(nombre_montaje)
-        eventos_validos.append(nombre_desmontaje)
-
+        # MONTAJE
+        nombre_montaje = f"MONTAJE - {data['evento']} - {data['lugar']}"
         crear_o_actualizar_evento(
             service,
             nombre_montaje,
-            evento['montaje_inicio'] + "T08:00:00",
-            evento['montaje_fin'] + "T20:00:00",
-            evento['lugar']
+            data['montaje_inicio'],
+            data['montaje_fin'],
+            data['lugar']
         )
+        eventos_actuales.append(nombre_montaje)
 
+        # DESMONTAJE
+        nombre_desmontaje = f"DESMONTAJE - {data['evento']} - {data['lugar']}"
         crear_o_actualizar_evento(
             service,
             nombre_desmontaje,
-            evento['desmontaje'] + "T08:00:00",
-            evento['desmontaje'] + "T20:00:00",
-            evento['lugar']
+            data['desmontaje'],
+            data['desmontaje'],
+            data['lugar']
         )
+        eventos_actuales.append(nombre_desmontaje)
 
-    # 🧠 eliminar huérfanos
-    limpiar_eventos_huerfanos(service, eventos_validos)
+    limpiar_eventos(service, eventos_actuales)
 
-    print("\n🚀 Calendario sincronizado correctamente")
-
+    print("🚀 Calendario sincronizado")
 
 if __name__ == "__main__":
     main()
