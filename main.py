@@ -1,12 +1,12 @@
 import os
 import re
+import json
 from datetime import datetime, UTC
 
 from dotenv import load_dotenv
 import dropbox
 
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 # ---------------- CONFIG ----------------
@@ -23,21 +23,14 @@ if not DROPBOX_TOKEN:
 
 dbx = dropbox.Dropbox(DROPBOX_TOKEN)
 
-# ---------------- AUTH GOOGLE ----------------
+# ---------------- GOOGLE AUTH (GITHUB READY) ----------------
 def get_calendar_service():
-    creds = None
+    if "GOOGLE_TOKEN_JSON" not in os.environ:
+        print("❌ Falta GOOGLE_TOKEN_JSON")
+        exit()
 
-    if os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
-
-    if not creds or not creds.valid:
-        flow = InstalledAppFlow.from_client_secrets_file(
-            "client_secret.json", SCOPES
-        )
-        creds = flow.run_local_server(port=0)
-
-        with open("token.json", "w") as token:
-            token.write(creds.to_json())
+    token_data = json.loads(os.environ["GOOGLE_TOKEN_JSON"])
+    creds = Credentials.from_authorized_user_info(token_data, SCOPES)
 
     service = build("calendar", "v3", credentials=creds)
     return service
@@ -71,7 +64,8 @@ def interpretar_nombre(nombre):
             "desmontaje": f"{year}-{month}-{int(m_fin)+1:02d}"
         }
 
-    except:
+    except Exception as e:
+        print(f"❌ Error interpretando: {nombre}")
         return None
 
 
@@ -195,10 +189,10 @@ def main():
             evento['lugar']
         )
 
-    # 🧠 eliminar eventos que ya no existen en Dropbox
+    # 🧠 eliminar huérfanos
     limpiar_eventos_huerfanos(service, eventos_validos)
 
-    print("\n🚀 Calendario sincronizado perfectamente")
+    print("\n🚀 Calendario sincronizado correctamente")
 
 
 if __name__ == "__main__":
