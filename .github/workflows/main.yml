@@ -1,37 +1,27 @@
-name: Actualizar calendario
+name: Sync Calendar
 
 on:
   schedule:
-    - cron: '*/5 * * * *' # cada 5 minutos (estable en GitHub)
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
-  actualizar:
+  run-script:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Clonar repositorio
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configurar Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Instalar dependencias
-        run: |
-          pip install dropbox python-dotenv PyGithub
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
-      - name: Ejecutar script
+      - name: Run script
         env:
           DROPBOX_TOKEN: ${{ secrets.DROPBOX_TOKEN }}
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
         run: python main.py
-
-      - name: Subir cambios
-        run: |
-          git config --global user.name "bot-calendario"
-          git config --global user.email "bot@github.com"
-
-          git add eventos.ics
-          git commit -m "Actualización automática calendario" || echo "Sin cambios"
-          git push
